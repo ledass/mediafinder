@@ -1,73 +1,43 @@
-import threading
-from sqlalchemy import create_engine
-from sqlalchemy import Column, TEXT
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.orm.exc import NoResultFound
-from sqlalchemy.pool import StaticPool
-from mfinder import DB_URL
-
-
-BASE = declarative_base()
-
-
-class Filters(BASE):
-    __tablename__ = "filters"
-    filters = Column(TEXT, primary_key=True)
-    message = Column(TEXT)
-
-    def __init__(self, filters, message):
-        self.filters = filters
-        self.message = message
-
-
-def start() -> scoped_session:
-    engine = create_engine(DB_URL, client_encoding="utf8", poolclass=StaticPool)
-    BASE.metadata.bind = engine
-    BASE.metadata.create_all(engine)
-    return scoped_session(sessionmaker(bind=engine, autoflush=False))
-
-
-SESSION = start()
-INSERTION_LOCK = threading.RLock()
+from db.mongo import Filters
+from mfinder import LOGGER
 
 
 async def add_filter(filters, message):
-    with INSERTION_LOCK:
-        try:
-            fltr = SESSION.query(Filters).filter(Filters.filters.ilike(filters)).one()
-        except NoResultFound:
+    try:
+        existing = await Filters.find_one({"filters": {"$regex": f"^{filters}$", "$options": "i"}})
+        if not existing:
             fltr = Filters(filters=filters, message=message)
-            SESSION.add(fltr)
-            SESSION.commit()
+            await fltr.commit()
             return True
+    except Exception as e:
+        LOGGER.warning("Add filter error: %s", str(e))
+        return False
 
 
 async def is_filter(filters):
-    with INSERTION_LOCK:
-        try:
-            fltr = SESSION.query(Filters).filter(Filters.filters.ilike(filters)).one()
-            return fltr
-        except NoResultFound:
-            return False
+    try:
+        return await Filters.find_one({"filters": {"$regex": f"^{filters}$", "$options": "i"}})
+    except Exception as e:
+        LOGGER.warning("Check filter error: %s", str(e))
+        return False
 
 
 async def rem_filter(filters):
-    with INSERTION_LOCK:
-        try:
-            fltr = SESSION.query(Filters).filter(Filters.filters.ilike(filters)).one()
-            SESSION.delete(fltr)
-            SESSION.commit()
+    try:
+        fltr = await Filters.find_one({"filters": {"$regex": f"^{filters}$", "$options": "i"}})
+        if fltr:
+            await fltr.delete()
             return True
-        except NoResultFound:
-            return False
+        return False
+    except Exception as e:
+        LOGGER.warning("Delete filter error: %s", str(e))
+        return False
 
 
 async def list_filters():
     try:
-        fltrs = SESSION.query(Filters.filters).all()
-        return [fltr[0] for fltr in fltrs]
-    except NoResultFound:
+        all_filters = await Filters.find({}, projection={"filters": 1}).to_list(length=1000)
+        return [f.filters for f in all_filters]
+    except Exception as e:
+        LOGGER.warning("List filters error: %s", str(e))
         return False
-    finally:
-        SESSION.close()
