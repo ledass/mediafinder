@@ -1,63 +1,33 @@
-import threading
-from sqlalchemy import create_engine
-from sqlalchemy import Column, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.orm.exc import NoResultFound
-from sqlalchemy.pool import StaticPool
-from mfinder import DB_URL
-
-
-BASE = declarative_base()
-
-
-class BanList(BASE):
-    __tablename__ = "banlist"
-    user_id = Column(BigInteger, primary_key=True)
-
-
-    def __init__(self, user_id):
-        self.user_id = user_id
-
-
-
-def start() -> scoped_session:
-    engine = create_engine(DB_URL, client_encoding="utf8", poolclass=StaticPool)
-    BASE.metadata.bind = engine
-    BASE.metadata.create_all(engine)
-    return scoped_session(sessionmaker(bind=engine, autoflush=False))
-
-
-SESSION = start()
-INSERTION_LOCK = threading.RLock()
-
+from db.mongo import BanList
+from mfinder import LOGGER
 
 async def ban_user(user_id):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(BanList).filter_by(user_id=user_id).one()
-        except NoResultFound:
-            usr = BanList(user_id=user_id)
-            SESSION.add(usr)
-            SESSION.commit()
+    try:
+        user = await BanList.find_one({"user_id": user_id})
+        if not user:
+            new_user = BanList(user_id=user_id)
+            await new_user.commit()
             return True
-
+        return False
+    except Exception as e:
+        LOGGER.warning("Error banning user: %s", str(e))
+        return False
 
 async def is_banned(user_id):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(BanList).filter_by(user_id=user_id).one()
-            return usr.user_id
-        except NoResultFound:
-            return False
-
+    try:
+        user = await BanList.find_one({"user_id": user_id})
+        return user is not None
+    except Exception as e:
+        LOGGER.warning("Error checking banned user: %s", str(e))
+        return False
 
 async def unban_user(user_id):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(BanList).filter_by(user_id=user_id).one()
-            SESSION.delete(usr)
-            SESSION.commit()
+    try:
+        user = await BanList.find_one({"user_id": user_id})
+        if user:
+            await user.delete()
             return True
-        except NoResultFound:
-            return False
+        return False
+    except Exception as e:
+        LOGGER.warning("Error unbanning user: %s", str(e))
+        return False
