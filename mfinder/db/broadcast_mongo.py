@@ -1,69 +1,41 @@
-import threading
-from sqlalchemy import create_engine
-from sqlalchemy import Column, TEXT, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.orm.exc import NoResultFound
-from sqlalchemy.pool import StaticPool
-from mfinder import DB_URL
-
-
-BASE = declarative_base()
-
-
-class Broadcast(BASE):
-    __tablename__ = "broadcast"
-    user_id = Column(BigInteger, primary_key=True)
-    user_name = Column(TEXT)
-
-    def __init__(self, user_id, user_name):
-        self.user_id = user_id
-        self.user_name = user_name
-
-
-def start() -> scoped_session:
-    engine = create_engine(DB_URL, client_encoding="utf8", poolclass=StaticPool)
-    BASE.metadata.bind = engine
-    BASE.metadata.create_all(engine)
-    return scoped_session(sessionmaker(bind=engine, autoflush=False))
-
-
-SESSION = start()
-INSERTION_LOCK = threading.RLock()
+from mfinder import LOGGER
+from db.mongo import Broadcast
 
 
 async def add_user(user_id, user_name):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(Broadcast).filter_by(user_id=user_id).one()
-        except NoResultFound:
-            usr = Broadcast(user_id=user_id, user_name=user_name)
-            SESSION.add(usr)
-            SESSION.commit()
+    try:
+        existing = await Broadcast.find_one({"user_id": user_id})
+        if not existing:
+            user = Broadcast(user_id=user_id, user_name=user_name)
+            await user.commit()
+    except Exception as e:
+        LOGGER.warning("Add user error: %s", str(e))
 
 
 async def is_user(user_id):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(Broadcast).filter_by(user_id=user_id).one()
-            return usr.user_id
-        except NoResultFound:
-            return False
+    try:
+        user = await Broadcast.find_one({"user_id": user_id})
+        if user:
+            return user.user_id
+        return False
+    except Exception as e:
+        LOGGER.warning("Check user error: %s", str(e))
+        return False
 
 
 async def query_msg():
     try:
-        query = SESSION.query(Broadcast.user_id).order_by(Broadcast.user_id)
-        return query.all()
-    finally:
-        SESSION.close()
+        users = await Broadcast.find({}, projection={"user_id": 1}).to_list(length=100000)
+        return [(user.user_id,) for user in users]
+    except Exception as e:
+        LOGGER.warning("Query users error: %s", str(e))
+        return []
 
 
 async def del_user(user_id):
-    with INSERTION_LOCK:
-        try:
-            usr = SESSION.query(Broadcast).filter_by(user_id=user_id).one()
-            SESSION.delete(usr)
-            SESSION.commit()
-        except NoResultFound:
-            pass
+    try:
+        user = await Broadcast.find_one({"user_id": user_id})
+        if user:
+            await user.delete()
+    except Exception as e:
+        LOGGER.warning("Delete user error: %s", str(e))
